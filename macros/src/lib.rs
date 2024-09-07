@@ -1,7 +1,7 @@
 use proc_macro::TokenStream;
 use quote::{format_ident, quote};
 use syn::parse::{Parse, ParseStream};
-use syn::{bracketed, parse_macro_input, Ident, ItemFn, Token, TypeBareFn, TypePath};
+use syn::{bracketed, parse_macro_input, Ident, ItemFn, Token, TypeBareFn, TypePath, ExprClosure};
 
 /// internal encoding of registry name
 /// declare_registry!(unwind)
@@ -102,7 +102,7 @@ pub fn declare_registry(input: TokenStream) -> TokenStream {
     .into()
 }
 
-/// run_all!($registry_name, $runner_name)
+/// test_all!($registry_name, $runner_name)
 /// iterate and run all test units in a registry slice
 /// user should provide a runner which executes each of the test unit in the registry
 ///
@@ -110,9 +110,13 @@ pub fn declare_registry(input: TokenStream) -> TokenStream {
 /// runner can also be omitted if
 ///     1. registry contains functions of type fn() -> bool
 ///     2. the returned boolean indicates whether the test is passed or not
+enum RunnerExpr {
+    Closure(ExprClosure),
+    Path(TypePath)
+}
 struct RunConfig {
     registry_name: Ident,
-    runner: Option<TypePath>,
+    runner: Option<RunnerExpr>,
 }
 
 impl Parse for RunConfig {
@@ -120,7 +124,11 @@ impl Parse for RunConfig {
         let registry_name: Ident = input.parse()?;
         let runner = if input.peek(Token![,]) {
             input.parse::<Token![,]>()?;
-            Some(input.parse::<TypePath>()?)
+            if input.peek(Token![|]) {
+                Some(RunnerExpr::Closure(input.parse::<ExprClosure>()?))
+            }else {
+                Some(RunnerExpr::Path(input.parse::<TypePath>()?))
+            }
         } else {
             None
         };
@@ -139,7 +147,12 @@ pub fn test_all(input: TokenStream) -> TokenStream {
         quote! {
             |f: fn() -> bool| f()
         },
-        |runner| quote! {#runner},
+        |runner| {
+            match runner {
+                RunnerExpr::Closure(r) => quote! {#r},
+                RunnerExpr::Path(r) => quote! {#r}
+            }
+        },
     );
     quote! {{
         let binded_struct = ::tester::TestRegistry::new(&#registry_slice_name, #runner);
